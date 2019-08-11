@@ -27,7 +27,7 @@ public interface API {
 
 	@POST("{path}")
 	@FormUrlEncoded Call<JobInfos> requestJob(
-			@Path("path") String path,
+			@Path(value="path", encoded = true) String path,
 			@Field("computemethod") int computeMethod,
 			@Field("cpu_cores") int cpuCores,
 			@Field("ram_max") long ramMax,
