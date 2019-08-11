@@ -31,16 +31,13 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.io.UnsupportedEncodingException;
-import java.net.ConnectException;
-import java.net.CookieHandler;
 import java.net.CookieManager;
+import java.net.CookiePolicy;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.NoRouteToHostException;
-import java.net.UnknownHostException;
 import java.net.URL;
-import java.net.URLEncoder;
+import java.net.UnknownHostException;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
@@ -67,6 +64,14 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 
+import com.sheepit.client.server.API;
+import com.sheepit.client.server.datamodel.JobInfos;
+import com.sheepit.client.server.datamodel.ServerConfig;
+import com.sheepit.client.server.datamodel.RequestEndPoint;
+import okhttp3.JavaNetCookieJar;
+import okhttp3.OkHttpClient;
+import org.simpleframework.xml.convert.AnnotationStrategy;
+import org.simpleframework.xml.core.Persister;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -85,9 +90,14 @@ import com.sheepit.client.exception.FermeExceptionServerOverloaded;
 import com.sheepit.client.exception.FermeExceptionSessionDisabled;
 import com.sheepit.client.exception.FermeServerDown;
 import com.sheepit.client.os.OS;
+import retrofit2.Response;
+import retrofit2.Retrofit;
+import retrofit2.converter.simplexml.SimpleXmlConverterFactory;
 
 public class Server extends Thread implements HostnameVerifier, X509TrustManager {
 	private String base_url;
+	private API service;
+	private ServerConfig serverConfig;
 	private Configuration user_config;
 	private Client client;
 	private HashMap<String, String> pages;
@@ -104,13 +114,24 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 		this.log = Log.getInstance(this.user_config);
 		this.lastRequestTime = 0;
 		this.keepmealive_duration = 15 * 60 * 1000; // default 15min
+
+
+		CookieManager cookieManager = new CookieManager();
+		cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
+		OkHttpClient.Builder builder = new OkHttpClient.Builder();
+		builder.cookieJar(new JavaNetCookieJar(cookieManager));
 		
-		CookieManager cookies = new CookieManager();
-		CookieHandler.setDefault(cookies);
+		Retrofit retrofit = new Retrofit.Builder()
+				.baseUrl(this.base_url)
+				.client(builder.build())
+				.addConverterFactory(SimpleXmlConverterFactory.createNonStrict(new Persister(new AnnotationStrategy())))
+				.build();
+
+		service = retrofit.create(API.class);
 	}
 	
 	public void run() {
-		this.stayAlive();
+//		this.stayAlive();
 	}
 	
 	public void stayAlive() {
@@ -184,115 +205,140 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 	
 	public Error.Type getConfiguration() {
 		OS os = OS.getOS();
-		HttpURLConnection connection = null;
+
 		try {
-			String url_remote = this.base_url + "/server/config.php";
-			String parameters = String.format("login=%s&password=%s&cpu_family=%s&cpu_model=%s&cpu_model_name=%s&cpu_cores=%s&os=%s&ram=%s&bits=%s&version=%s&hostname=%s&ui=%s&extras=%s", 
-				URLEncoder.encode(this.user_config.getLogin(), "UTF-8"),
-				URLEncoder.encode(this.user_config.getPassword(), "UTF-8"),
-				URLEncoder.encode(os.getCPU().family(), "UTF-8"),
-				URLEncoder.encode(os.getCPU().model(), "UTF-8"),
-				URLEncoder.encode(os.getCPU().name(), "UTF-8"),
-				((this.user_config.getNbCores() == -1) ? os.getCPU().cores() : this.user_config.getNbCores()),
-				URLEncoder.encode(os.name(), "UTF-8"),
-				os.getMemory(),
-				URLEncoder.encode(os.getCPU().arch(), "UTF-8"),
-				this.user_config.getJarVersion(),
-				URLEncoder.encode(this.user_config.getHostname(), "UTF-8"),
-				this.client.getGui().getClass().getSimpleName(),
-				this.user_config.getExtras());
-			this.log.debug("Server::getConfiguration url " + url_remote);
-			
-			connection = this.HTTPRequest(url_remote, parameters);
-			int r = connection.getResponseCode();
-			String contentType = connection.getContentType();
-			
-			if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/xml")) {
-				DataInputStream in = new DataInputStream(connection.getInputStream());
-				Document document = null;
-				
-				try {
-					document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
-				}
-				catch (SAXException e) {
-					this.log.error("getConfiguration error: failed to parse XML SAXException " + e);
-					return Error.Type.WRONG_CONFIGURATION;
-				}
-				catch (IOException e) {
-					this.log.error("getConfiguration error: failed to parse XML IOException " + e);
-					return Error.Type.WRONG_CONFIGURATION;
-				}
-				catch (ParserConfigurationException e) {
-					this.log.error("getConfiguration error: failed to parse XML ParserConfigurationException " + e);
-					return Error.Type.WRONG_CONFIGURATION;
-				}
-				
-				ServerCode ret = Utils.statusIsOK(document, "config");
-				if (ret != ServerCode.OK) {
-					return Error.ServerCodeToType(ret);
-				}
-				
-				Element config_node = null;
-				NodeList ns = null;
-				ns = document.getElementsByTagName("config");
-				if (ns.getLength() == 0) {
-					this.log.error("getConfiguration error: failed to parse XML, no node 'config'");
-					return Error.Type.WRONG_CONFIGURATION;
-				}
-				config_node = (Element) ns.item(0);
-				
-				ns = config_node.getElementsByTagName("request");
-				if (ns.getLength() == 0) {
-					this.log.error("getConfiguration error: failed to parse XML, node 'config' has no child node 'request'");
-					return Error.Type.WRONG_CONFIGURATION;
-				}
-				for (int i = 0; i < ns.getLength(); i++) {
-					Element element = (Element) ns.item(i);
-					if (element.hasAttribute("type") && element.hasAttribute("path")) {
-						this.pages.put(element.getAttribute("type"), element.getAttribute("path"));
-						if (element.getAttribute("type").equals("keepmealive") && element.hasAttribute("max-period")) {
-							this.keepmealive_duration = (Integer.parseInt(element.getAttribute("max-period")) - 120) * 1000; // put 2min of safety net
-						}
-					}
-				}
-			}
-			else if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/html")) {
+			// this.log.debug("Server::getConfiguration url " + url_remote);
+			Response<ServerConfig> request = service.newSession(
+					this.user_config.getLogin(),
+					this.user_config.getPassword(),
+					os.getCPU().family(),
+					os.getCPU().model(),
+					os.getCPU().name(),
+					this.user_config.getNbCores() == -1 ? os.getCPU().cores() : this.user_config.getNbCores(),
+					os.name(),
+					os.getMemory(),
+					os.getCPU().arch(),
+					this.user_config.getJarVersion(),
+					this.user_config.getHostname(),
+					this.client.getGui().getClass().getSimpleName(),
+					this.user_config.getExtras()
+			).execute();
+
+//			System.out.println("request " + request);
+
+			if (request.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */ ) {
 				return Error.Type.ERROR_BAD_RESPONSE;
 			}
-			else {
-				this.log.error("Server::getConfiguration: Invalid response " + contentType + " " + r);
-				return Error.Type.WRONG_CONFIGURATION;
+
+			serverConfig = request.body();
+//			System.out.println("serverConfig " + serverConfig);
+
+			if (ServerCode.fromInt(serverConfig.getStatus()) != ServerCode.OK) {
+				return Error.ServerCodeToType(ServerCode.fromInt(serverConfig.getStatus()));
 			}
+
+			RequestEndPoint keepmealiveEndPoint = serverConfig.getRequestEndPoint("keepmealive");
+			if (keepmealiveEndPoint != null && keepmealiveEndPoint.getMaxPeriod() > 0) {
+				this.keepmealive_duration = (keepmealiveEndPoint.getMaxPeriod() - 120) * 1000; // put 2min of safety net
+			}
+
+			// ServerConfig(
+			//			status=0,
+			//			requestEndPoints=[
+			//				RequestEndPoint(type=validate-job, path=/server/send_frame.php, maxPeriod=0),
+			//				RequestEndPoint(type=request-job, path=/server/request_job.php, maxPeriod=0),
+			//				RequestEndPoint(type=download-archive, path=/server/archive.php, maxPeriod=0),
+			//				RequestEndPoint(type=error, path=/server/error.php, maxPeriod=0),
+			//				RequestEndPoint(type=keepmealive, path=/server/keepmealive.php, maxPeriod=1440),
+			//				RequestEndPoint(type=logout, path=/account.php?mode=logout&worker=1, maxPeriod=0),
+			//				RequestEndPoint(type=last-render-frame, path=/ajax.php?action=webclient_get_last_render_frame_ui&type=raw, maxPeriod=0)])
+
+
+			//				ServerCode ret = Utils.statusIsOK(document, "config");
+			//				if (ret != ServerCode.OK) {
+			//					return Error.ServerCodeToType(ret);
+			//				}
+
+//			if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/xml")) {
+//				DataInputStream in = new DataInputStream(connection.getInputStream());
+//				Document document = null;
+//
+//				try {
+//					document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
+//				}
+//				catch (SAXException e) {
+//					this.log.error("getConfiguration error: failed to parse XML SAXException " + e);
+//					return Error.Type.WRONG_CONFIGURATION;
+//				}
+//				catch (IOException e) {
+//					this.log.error("getConfiguration error: failed to parse XML IOException " + e);
+//					return Error.Type.WRONG_CONFIGURATION;
+//				}
+//				catch (ParserConfigurationException e) {
+//					this.log.error("getConfiguration error: failed to parse XML ParserConfigurationException " + e);
+//					return Error.Type.WRONG_CONFIGURATION;
+//				}
+//
+//				ServerCode ret = Utils.statusIsOK(document, "config");
+//				if (ret != ServerCode.OK) {
+//					return Error.ServerCodeToType(ret);
+//				}
+//
+//				Element config_node = null;
+//				NodeList ns = null;
+//				ns = document.getElementsByTagName("config");
+//				if (ns.getLength() == 0) {
+//					this.log.error("getConfiguration error: failed to parse XML, no node 'config'");
+//					return Error.Type.WRONG_CONFIGURATION;
+//				}
+//				config_node = (Element) ns.item(0);
+//
+//				ns = config_node.getElementsByTagName("request");
+//				if (ns.getLength() == 0) {
+//					this.log.error("getConfiguration error: failed to parse XML, node 'config' has no child node 'request'");
+//					return Error.Type.WRONG_CONFIGURATION;
+//				}
+
+//
+//			}
+//			else if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/html")) {
+//				return Error.Type.ERROR_BAD_RESPONSE;
+//			}
+//			else {
+//				this.log.error("Server::getConfiguration: Invalid response " + contentType + " " + r);
+//				return Error.Type.WRONG_CONFIGURATION;
+//			}
 		}
-		catch (ConnectException e) {
-			this.log.error("Server::getConfiguration error ConnectException " + e);
-			return Error.Type.NETWORK_ISSUE;
-		}
-		catch (UnknownHostException e) {
-			this.log.error("Server::getConfiguration: exception UnknownHostException " + e);
-			return Error.Type.NETWORK_ISSUE;
-		}
-		catch (UnsupportedEncodingException e) {
-			this.log.error("Server::getConfiguration: exception UnsupportedEncodingException " + e);
-			return Error.Type.UNKNOWN;
-		}
+//		catch (ConnectException e) {
+//			this.log.error("Server::getConfiguration error ConnectException " + e);
+//			return Error.Type.NETWORK_ISSUE;
+//		}
+//		catch (UnknownHostException e) {
+//			this.log.error("Server::getConfiguration: exception UnknownHostException " + e);
+//			return Error.Type.NETWORK_ISSUE;
+//		}
+//		catch (UnsupportedEncodingException e) {
+//			this.log.error("Server::getConfiguration: exception UnsupportedEncodingException " + e);
+//			return Error.Type.UNKNOWN;
+//		}
 		catch (IOException e) {
 			this.log.error("Server::getConfiguration: exception IOException " + e);
 			return Error.Type.UNKNOWN;
 		}
-		finally {
-			if (connection != null) {
-				connection.disconnect();
-			}
-		}
+//		finally {
+//			if (connection != null) {
+//				connection.disconnect();
+//			}
+//		}
 		return Error.Type.OK;
 	}
 	
 	public Job requestJob() throws FermeException {
 		this.log.debug("Server::requestJob");
 		String url_contents = "";
-		
-		HttpURLConnection connection = null;
+
+
+//		HttpURLConnection connection = null;
 		try {
 			OS os = OS.getOS();
 			long maxMemory = this.user_config.getMaxMemory();
@@ -303,205 +349,192 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 			else if (freeMemory > 0 && maxMemory > 0) {
 				maxMemory = Math.min(maxMemory, freeMemory);
 			}
-			String url = String.format("%s?computemethod=%s&cpu_cores=%s&ram_max=%s&rendertime_max=%s", this.getPage("request-job"), this.user_config.computeMethodToInt(), ((this.user_config.getNbCores() == -1) ? os.getCPU().cores() : this.user_config.getNbCores()), maxMemory, this.user_config.getMaxRenderTime());
+			//String url = String.format("%s?computemethod=%s&cpu_cores=%s&ram_max=%s&rendertime_max=%s",
+			// this.getPage("request-job"),
+			// ,
+			// maxMemory,
+			//
+			// );
+			String gpuModel = "";
+			String gpuType = "";
+			long gpuVram = 0;
 			if (this.user_config.getComputeMethod() != ComputeType.CPU && this.user_config.getGPUDevice() != null) {
-				String gpu_model = "";
-				try {
-					gpu_model = URLEncoder.encode(this.user_config.getGPUDevice().getModel(), "UTF-8");
-				}
-				catch (UnsupportedEncodingException e) {
-				}
-				url += "&gpu_model=" + gpu_model + "&gpu_ram=" + this.user_config.getGPUDevice().getMemory() + "&gpu_type=" + this.user_config.getGPUDevice().getType();
+				gpuModel = this.user_config.getGPUDevice().getModel();
+				gpuType = this.user_config.getGPUDevice().getType();
+				gpuVram = this.user_config.getGPUDevice().getMemory();
 			}
-			
-			connection = this.HTTPRequest(url, this.generateXMLForMD5cache());
-			
-			int r = connection.getResponseCode();
-			String contentType = connection.getContentType();
-			
-			if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/xml")) {
-				DataInputStream in = new DataInputStream(connection.getInputStream());
-				Document document = null;
-				try {
-					document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
-				}
-				catch (SAXException e) {
-					throw new FermeException("error requestJob: parseXML failed, SAXException " + e);
-				}
-				catch (IOException e) {
-					throw new FermeException("error requestJob: parseXML failed IOException " + e);
-				}
-				catch (ParserConfigurationException e) {
-					throw new FermeException("error requestJob: parseXML failed ParserConfigurationException " + e);
-				}
-				
-				ServerCode ret = Utils.statusIsOK(document, "jobrequest");
-				if (ret != ServerCode.OK) {
-					if (ret == ServerCode.JOB_REQUEST_NOJOB) {
-						handleFileMD5DeleteDocument(document, "jobrequest");
+
+
+			Response<JobInfos> request = service.requestJob(
+					serverConfig.getRequestEndPoint("request-job").getPath(),
+					this.user_config.computeMethodToInt(),
+					(this.user_config.getNbCores() == -1) ? os.getCPU().cores() : this.user_config.getNbCores(),
+					maxMemory,
+					this.user_config.getMaxRenderTime(),
+					gpuModel,
+					gpuVram,
+					gpuType
+			).execute();
+
+			if (request.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */ ) {
+				throw new FermeExceptionBadResponseFromServer();
+			}
+
+			//				if (r == HttpURLConnection.HTTP_UNAVAILABLE || r == HttpURLConnection. HTTP_CLIENT_TIMEOUT) {
+			//					// most likely varnish is up but apache down
+			//					throw new FermeServerDown();
+			//				}
+
+			System.out.println("request " + request);
+			JobInfos jobData = request.body();
+			System.out.println("jobData " + jobData);
+
+
+
+			ServerCode serverCode = ServerCode.fromInt(jobData.getStatus());
+//			ServerCode ret = Utils.statusIsOK(document, "jobrequest");
+			if (serverCode != ServerCode.OK) {
+				switch (serverCode) {
+					case JOB_REQUEST_NOJOB:
+						//handleFileMD5DeleteDocument(document, "jobrequest");
 						return null;
-					}
-					else if (ret == ServerCode.JOB_REQUEST_ERROR_NO_RENDERING_RIGHT) {
+					case JOB_REQUEST_ERROR_NO_RENDERING_RIGHT:
 						throw new FermeExceptionNoRightToRender();
-					}
-					else if (ret == ServerCode.JOB_REQUEST_ERROR_DEAD_SESSION) {
+					case JOB_REQUEST_ERROR_DEAD_SESSION:
 						throw new FermeExceptionNoSession();
-					}
-					else if (ret == ServerCode.JOB_REQUEST_ERROR_RENDERER_NOT_AVAILABLE) {
-						throw new FermeExceptionNoRendererAvailable();
-					}
-					else if (ret == ServerCode.JOB_REQUEST_ERROR_SESSION_DISABLED) {
+					case JOB_REQUEST_ERROR_SESSION_DISABLED:
 						throw new FermeExceptionSessionDisabled();
-					}
-					else if (ret == ServerCode.JOB_REQUEST_SERVER_IN_MAINTENANCE) {
+					case JOB_REQUEST_ERROR_INTERNAL_ERROR:
+						throw new FermeExceptionBadResponseFromServer();
+					case JOB_REQUEST_ERROR_RENDERER_NOT_AVAILABLE:
+						throw new FermeExceptionNoRendererAvailable();
+					case JOB_REQUEST_SERVER_IN_MAINTENANCE:
 						throw new FermeExceptionServerInMaintenance();
-					}
-					else if (ret == ServerCode.JOB_REQUEST_SERVER_OVERLOADED) {
+					case JOB_REQUEST_SERVER_OVERLOADED:
 						throw new FermeExceptionServerOverloaded();
-					}
-					this.log.error("Server::requestJob: Utils.statusIsOK(document, 'jobrequest') -> ret " + ret);
-					throw new FermeException("error requestJob: status is not ok (it's " + ret + ")");
+					default:
+						throw new FermeException("error requestJob: status is not ok (it's " + serverCode + ")");
 				}
-				
-				handleFileMD5DeleteDocument(document, "jobrequest");
-				
-				Element a_node = null;
-				NodeList ns = null;
-				
-				ns = document.getElementsByTagName("stats");
-				if (ns.getLength() == 0) {
-					throw new FermeException("error requestJob: parseXML failed, no 'frame' node");
-				}
-				a_node = (Element) ns.item(0);
-				
-				int remaining_frames = 0;
-				int credits_earned = 0;
-				int credits_earned_session = 0;
-				int waiting_project = 0;
-				int renderable_project = 0;
-				int connected_machine = 0;
-				if (a_node.hasAttribute("frame_remaining") && a_node.hasAttribute("credits_total") && a_node.hasAttribute("credits_session") && a_node.hasAttribute("waiting_project") && a_node.hasAttribute("connected_machine")) {
-					remaining_frames = Integer.parseInt(a_node.getAttribute("frame_remaining"));
-					credits_earned = Integer.parseInt(a_node.getAttribute("credits_total"));
-					credits_earned_session = Integer.parseInt(a_node.getAttribute("credits_session"));
-					waiting_project = Integer.parseInt(a_node.getAttribute("waiting_project"));
-					connected_machine = Integer.parseInt(a_node.getAttribute("connected_machine"));
-				}
-				if (a_node.hasAttribute("renderable_project")) {
-					renderable_project = Integer.parseInt(a_node.getAttribute("renderable_project"));
-				}
-				
-				ns = document.getElementsByTagName("job");
-				if (ns.getLength() == 0) {
-					throw new FermeException("error requestJob: parseXML failed, no 'job' node");
-				}
-				Element job_node = (Element) ns.item(0);
-				
-				ns = job_node.getElementsByTagName("renderer");
-				if (ns.getLength() == 0) {
-					throw new FermeException("error requestJob: parseXML failed, node 'job' have no sub-node 'renderer'");
-				}
-				Element renderer_node = (Element) ns.item(0);
-				
+			}
+
+//			if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/xml")) {
+//				DataInputStream in = new DataInputStream(connection.getInputStream());
+//				Document document = null;
+//				try {
+//					document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
+//				}
+//				catch (SAXException e) {
+//					throw new FermeException("error requestJob: parseXML failed, SAXException " + e);
+//				}
+//				catch (IOException e) {
+//					throw new FermeException("error requestJob: parseXML failed IOException " + e);
+//				}
+//				catch (ParserConfigurationException e) {
+//					throw new FermeException("error requestJob: parseXML failed ParserConfigurationException " + e);
+//				}
+//
+//
+//
+//				handleFileMD5DeleteDocument(document, "jobrequest");
+//
+//				Element a_node = null;
+//				NodeList ns = null;
+//
+//				ns = document.getElementsByTagName("stats");
+//				if (ns.getLength() == 0) {
+//					throw new FermeException("error requestJob: parseXML failed, no 'frame' node");
+//				}
+//				a_node = (Element) ns.item(0);
+//
+//				ns = document.getElementsByTagName("job");
+//				if (ns.getLength() == 0) {
+//					throw new FermeException("error requestJob: parseXML failed, no 'job' node");
+//				}
+//				Element job_node = (Element) ns.item(0);
+//
+//				ns = job_node.getElementsByTagName("renderer");
+//				if (ns.getLength() == 0) {
+//					throw new FermeException("error requestJob: parseXML failed, node 'job' have no sub-node 'renderer'");
+//				}
+//				Element renderer_node = (Element) ns.item(0);
+//
 				String script = "import bpy\n";
-				
+
 				// blender 2.7x
 				script += "try:\n";
 				script += "\tbpy.context.user_preferences.filepaths.temporary_directory = \"" + this.user_config.getWorkingDirectory().getAbsolutePath().replace("\\", "\\\\") + "\"\n";
 				script += "except AttributeError:\n";
 				script += "\tpass\n";
-				
+
 				// blender 2.80
 				script += "try:\n";
 				script += "\tbpy.context.preferences.filepaths.temporary_directory = \"" + this.user_config.getWorkingDirectory().getAbsolutePath().replace("\\", "\\\\") + "\"\n";
 				script += "except AttributeError:\n";
 				script += "\tpass\n";
-				
-				try {
-					ns = job_node.getElementsByTagName("script");
-					if (ns.getLength() != 0) {
-						Element a_node3 = (Element) ns.item(0);
-						script += a_node3.getTextContent();
-					}
-				}
-				catch (Exception e) {
-					StringWriter sw = new StringWriter();
-					PrintWriter pw = new PrintWriter(sw);
-					e.printStackTrace(pw);
-					this.log.debug("Server::requestJob Exception " + e + " stacktrace: " + sw.toString());
-				}
-				
-				String[] job_node_require_attribute = { "id", "archive_md5", "path", "use_gpu", "frame", "name", "extras", "password" };
-				String[] renderer_node_require_attribute = { "md5", "commandline" };
-				
-				for (String e : job_node_require_attribute) {
-					if (job_node.hasAttribute(e) == false) {
-						throw new FermeException("error requestJob: parseXML failed, job_node have to attribute '" + e + "'");
-					}
-				}
-				
-				for (String e : renderer_node_require_attribute) {
-					if (renderer_node.hasAttribute(e) == false) {
-						throw new FermeException("error requestJob: parseXML failed, renderer_node have to attribute '" + e + "'");
-					}
-				}
-				
-				boolean use_gpu = (job_node.getAttribute("use_gpu").compareTo("1") == 0);
-				boolean synchronous_upload = true;
-				if (job_node.hasAttribute("synchronous_upload")) {
-					synchronous_upload = (job_node.getAttribute("synchronous_upload").compareTo("1") == 0);
-				}
-				
-				String frame_extras = "";
-				if (job_node.hasAttribute("extras")) {
-					frame_extras = job_node.getAttribute("extras");
-				}
-				
-				String update_method = null;
-				if (renderer_node.hasAttribute("update_method")) {
-					update_method = renderer_node.getAttribute("update_method");
-				}
-				
+
+
+				script += jobData.getRenderTask().getScript();
+/*
+
+<?xml version="1.0" encoding="UTF-8"?>
+<jobrequest status="0">
+    <stats credits_session="0" credits_total="48186" frame_remaining="0" waiting_project="0" connected_machine="25" />
+    <job id="1" use_gpu="1" archive_md5="d8b01c8656cca48b8a22bc7048783fe9" path="compute-method.blend" frame="0340" synchronous_upload="1" extras="" name="Can Blender be launched?" password="">
+        <renderer md5="3d0e05e7a43ae213eccf33c47b5900c5" commandline=".e --factory-startup --disable-autoexec -b .c -o .o -f .f -x 1" update_method="remainingtime" />
+        <script>....</script>
+    </job>
+</jobrequest>
+
+
+ */
+
 				Job a_job = new Job(
 						this.user_config,
 						this.client.getGui(),
 						this.client.getLog(),
-						job_node.getAttribute("id"),
-						job_node.getAttribute("frame"),
-						job_node.getAttribute("path").replace("/", File.separator),
-						use_gpu,
-						renderer_node.getAttribute("commandline"),
+						jobData.getRenderTask().getId(),
+						jobData.getRenderTask().getFrame(),
+						jobData.getRenderTask().getPath().replace("/", File.separator),
+						jobData.getRenderTask().getUseGpu() == 1,
+						jobData.getRenderTask().getRendererInfos().getCommandline(),
 						script,
-						job_node.getAttribute("archive_md5"),
-						renderer_node.getAttribute("md5"),
-						job_node.getAttribute("name"),
-						job_node.getAttribute("password"),
-						frame_extras,
-						synchronous_upload,
-						update_method
+						jobData.getRenderTask().getArchive_md5(),
+						jobData.getRenderTask().getRendererInfos().getMd5(),
+						jobData.getRenderTask().getName(),
+						jobData.getRenderTask().getPassword(),
+						jobData.getRenderTask().getExtras(),
+						jobData.getRenderTask().getSynchronous_upload().equals("1"),
+						jobData.getRenderTask().getRendererInfos().getUpdate_method()
 						);
-				
-				this.client.getGui().displayStats(new Stats(remaining_frames, credits_earned, credits_earned_session, renderable_project, waiting_project, connected_machine));
-				
+
+				this.client.getGui().displayStats(
+						new Stats(
+								jobData.getSessionStats().getRemainingFrames(),
+								jobData.getSessionStats().getCreditsEarnedByUser(),
+								jobData.getSessionStats().getCreditsEarnedOnSession(),
+								jobData.getSessionStats().getRenderableProjects(),
+								jobData.getSessionStats().getWaitingProjects(),
+								jobData.getSessionStats().getConnectedMachines()));
+
 				return a_job;
-			}
-			else {
-				System.out.println("Server::requestJob url " + url_contents + " r " + r + " contentType " + contentType);
-				if (r == HttpURLConnection.HTTP_UNAVAILABLE || r == HttpURLConnection. HTTP_CLIENT_TIMEOUT) {
-					// most likely varnish is up but apache down
-					throw new FermeServerDown();
-				}
-				else if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/html")) {
-					throw new FermeExceptionBadResponseFromServer();
-				}
-				InputStream in = connection.getInputStream();
-				String line;
-				BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
-				while ((line = reader.readLine()) != null) {
-					System.out.print(line);
-				}
-				System.out.println("");
-			}
+//			}
+//			else {
+//				System.out.println("Server::requestJob url " + url_contents + " r " + r + " contentType " + contentType);
+//				if (r == HttpURLConnection.HTTP_UNAVAILABLE || r == HttpURLConnection. HTTP_CLIENT_TIMEOUT) {
+//					// most likely varnish is up but apache down
+//					throw new FermeServerDown();
+//				}
+//				else if (r == HttpURLConnection.HTTP_OK && contentType.startsWith("text/html")) {
+//					throw new FermeExceptionBadResponseFromServer();
+//				}
+//				InputStream in = connection.getInputStream();
+//				String line;
+//				BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+//				while ((line = reader.readLine()) != null) {
+//					System.out.print(line);
+//				}
+//				System.out.println("");
+//			}
 		}
 		catch (FermeException e) {
 			throw e;
@@ -518,12 +551,7 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 			e.printStackTrace(pw);
 			throw new FermeException("error requestJob: unknown exception " + e + " stacktrace: " + sw.toString());
 		}
-		finally {
-			if (connection != null) {
-				connection.disconnect();
-			}
-		}
-		throw new FermeException("error requestJob, end of function");
+		//throw new FermeException("error requestJob, end of function");
 	}
 	
 	public HttpURLConnection HTTPRequest(String url_) throws IOException {
