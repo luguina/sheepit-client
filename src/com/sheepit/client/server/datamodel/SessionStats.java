@@ -11,11 +11,11 @@ public class SessionStats {
 
 	@Attribute(name = "credits_session")
 	@Getter
-	private int creditsEarnedOnSession;
+	private int pointsEarnedOnSession;
 
 	@Attribute(name = "credits_total")
 	@Getter
-	private int creditsEarnedByUser;
+	private int pointsEarnedByUser;
 
 	@Attribute(name = "frame_remaining")
 	@Getter

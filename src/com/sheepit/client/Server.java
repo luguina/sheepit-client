@@ -510,8 +510,8 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 				this.client.getGui().displayStats(
 						new Stats(
 								jobData.getSessionStats().getRemainingFrames(),
-								jobData.getSessionStats().getCreditsEarnedByUser(),
-								jobData.getSessionStats().getCreditsEarnedOnSession(),
+								jobData.getSessionStats().getPointsEarnedByUser(),
+								jobData.getSessionStats().getPointsEarnedOnSession(),
 								jobData.getSessionStats().getRenderableProjects(),
 								jobData.getSessionStats().getWaitingProjects(),
 								jobData.getSessionStats().getConnectedMachines()));
