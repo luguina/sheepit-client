@@ -65,6 +65,7 @@ import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 
 import com.sheepit.client.server.API;
+import com.sheepit.client.server.datamodel.HeartBeatInfos;
 import com.sheepit.client.server.datamodel.JobInfos;
 import com.sheepit.client.server.datamodel.ServerConfig;
 import com.sheepit.client.server.datamodel.RequestEndPoint;
@@ -90,6 +91,7 @@ import com.sheepit.client.exception.FermeExceptionServerOverloaded;
 import com.sheepit.client.exception.FermeExceptionSessionDisabled;
 import com.sheepit.client.exception.FermeServerDown;
 import com.sheepit.client.os.OS;
+import retrofit2.Call;
 import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.simplexml.SimpleXmlConverterFactory;
@@ -131,7 +133,7 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 	}
 	
 	public void run() {
-//		this.stayAlive();
+		this.stayAlive();
 	}
 	
 	public void stayAlive() {
@@ -139,43 +141,36 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 			long current_time = new Date().getTime();
 			if ((current_time - this.lastRequestTime) > this.keepmealive_duration) {
 				try {
-					String args = "";
-					if (this.client != null && this.client.getRenderingJob() != null) {
-						args = "?frame=" + this.client.getRenderingJob().getFrameNumber() + "&job=" + this.client.getRenderingJob().getId();
-						if (this.client.getRenderingJob().getExtras() != null && this.client.getRenderingJob().getExtras().isEmpty() == false) {
-							args += "&extras=" + this.client.getRenderingJob().getExtras();
-						}
-						if (this.client.getRenderingJob().getProcessRender() != null) {
-							args += "&rendertime=" + this.client.getRenderingJob().getProcessRender().getDuration();
-							args += "&remainingtime=" + this.client.getRenderingJob().getProcessRender().getRemainingDuration();
-						}
+					int rendertime = 0;
+					int remainingtime = 0;
+					if (this.client.getRenderingJob().getProcessRender() != null) {
+						rendertime = this.client.getRenderingJob().getProcessRender().getDuration();
+						remainingtime = this.client.getRenderingJob().getProcessRender().getRemainingDuration();
 					}
-					
-					HttpURLConnection connection = this.HTTPRequest(this.getPage("keepmealive") + args);
-					
-					if (connection.getResponseCode() == HttpURLConnection.HTTP_OK && connection.getContentType().startsWith("text/xml")) {
-						DataInputStream in = new DataInputStream(connection.getInputStream());
-						try {
-							Document document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
-							ServerCode ret = Utils.statusIsOK(document, "keepmealive");
-							if (ret == ServerCode.KEEPMEALIVE_STOP_RENDERING) {
-								this.log.debug("Server::stayAlive server asked to kill local render process");
-								// kill the current process, it will generate an error but it's okay
-								if (this.client != null && this.client.getRenderingJob() != null && this.client.getRenderingJob().getProcessRender().getProcess() != null) {
-									this.client.getRenderingJob().setServerBlockJob(true);
-									this.client.getRenderingJob().setAskForRendererKill(true);
-									OS.getOS().kill(this.client.getRenderingJob().getProcessRender().getProcess());
-								}
+					Response<HeartBeatInfos> response = service.heartBeat(serverConfig.getRequestEndPoint("keepmealive").getPath(),
+							this.client.getRenderingJob().getFrameNumber(),
+							this.client.getRenderingJob().getId(),
+							this.client.getRenderingJob().getExtras(),
+							rendertime,
+							remainingtime).execute();
+
+					if (response.isSuccessful() == false) {
+						// do nothing, it's simply an hearbeat
+					}
+					else {
+						this.lastRequestTime = new Date().getTime();
+
+						HeartBeatInfos heartBeatInfos = response.body();
+						if (ServerCode.fromInt(heartBeatInfos.getStatus()) == ServerCode.KEEPMEALIVE_STOP_RENDERING) {
+							this.log.debug("Server::stayAlive server asked to kill local render process");
+							// kill the current process, it will generate an error but it's okay
+							if (this.client != null && this.client.getRenderingJob() != null && this.client.getRenderingJob().getProcessRender().getProcess() != null) {
+								this.client.getRenderingJob().setServerBlockJob(true);
+								this.client.getRenderingJob().setAskForRendererKill(true);
+								OS.getOS().kill(this.client.getRenderingJob().getProcessRender().getProcess());
 							}
 						}
-						catch (SAXException e) {
-						}
-						catch (ParserConfigurationException e) {
-						}
 					}
-				}
-				catch (NoRouteToHostException e) {
-					this.log.debug("Server::stayAlive can not connect to server");
 				}
 				catch (IOException e) {
 					StringWriter sw = new StringWriter();
@@ -224,10 +219,15 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 					this.user_config.getExtras()
 			).execute();
 
+
 //			System.out.println("request " + request);
 
-			if (request.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */ ) {
-				return Error.Type.ERROR_BAD_RESPONSE;
+			if (request.isSuccessful() == false) {
+				if (request.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */) {
+					return Error.Type.ERROR_BAD_RESPONSE;
+				}
+				
+				//if (request.errorBody().contentType())
 			}
 
 			serverConfig = request.body();
@@ -365,7 +365,7 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 			}
 
 
-			Response<JobInfos> request = service.requestJob(
+			Response<JobInfos> response = service.requestJob(
 					serverConfig.getRequestEndPoint("request-job").getPath(),
 					this.user_config.computeMethodToInt(),
 					(this.user_config.getNbCores() == -1) ? os.getCPU().cores() : this.user_config.getNbCores(),
@@ -376,7 +376,9 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 					gpuType
 			).execute();
 
-			if (request.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */ ) {
+
+
+			if (response.code() != HttpURLConnection.HTTP_OK  /* || newConfig.headers().get("contentType) .startsWith("text/html") */ ) {
 				throw new FermeExceptionBadResponseFromServer();
 			}
 
@@ -385,12 +387,11 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 			//					throw new FermeServerDown();
 			//				}
 
-			System.out.println("request " + request);
-			JobInfos jobData = request.body();
+			System.out.println("response " + response);
+			JobInfos jobData = response.body();
 			System.out.println("jobData " + jobData);
 
-
-
+			this.lastRequestTime = new Date().getTime();
 			ServerCode serverCode = ServerCode.fromInt(jobData.getStatus());
 //			ServerCode ret = Utils.statusIsOK(document, "jobrequest");
 			if (serverCode != ServerCode.OK) {

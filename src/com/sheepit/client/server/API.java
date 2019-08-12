@@ -1,5 +1,6 @@
 package com.sheepit.client.server;
 
+import com.sheepit.client.server.datamodel.HeartBeatInfos;
 import com.sheepit.client.server.datamodel.JobInfos;
 import com.sheepit.client.server.datamodel.ServerConfig;
 import retrofit2.Call;
@@ -35,6 +36,15 @@ public interface API {
 			@Field("gpu_model") String gpuModel,
 			@Field("gpu_ram") long gpuVram,
 			@Field("gpu_type") String gpuType);
+
+	@POST("{path}")
+	@FormUrlEncoded Call<HeartBeatInfos> heartBeat(
+			@Path(value="path", encoded = true) String path,
+			@Field("frame") String frame,
+			@Field("job") String job,
+			@Field("extras") String extras,
+			@Field("rendertime") int rendertime,
+			@Field("remainingtime") int remainingtime);
 }
 
 //http://simple.sourceforge.net/download/stream/doc/tutorial/tutorial.php
