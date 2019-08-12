@@ -43,7 +43,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 
 import javax.net.ssl.HostnameVerifier;
@@ -71,6 +70,7 @@ import com.sheepit.client.server.datamodel.ServerConfig;
 import com.sheepit.client.server.datamodel.RequestEndPoint;
 import okhttp3.JavaNetCookieJar;
 import okhttp3.OkHttpClient;
+import okhttp3.ResponseBody;
 import org.simpleframework.xml.convert.AnnotationStrategy;
 import org.simpleframework.xml.core.Persister;
 import org.w3c.dom.Document;
@@ -91,28 +91,23 @@ import com.sheepit.client.exception.FermeExceptionServerOverloaded;
 import com.sheepit.client.exception.FermeExceptionSessionDisabled;
 import com.sheepit.client.exception.FermeServerDown;
 import com.sheepit.client.os.OS;
-import retrofit2.Call;
 import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.simplexml.SimpleXmlConverterFactory;
 
 public class Server extends Thread implements HostnameVerifier, X509TrustManager {
-	private String base_url;
 	private API service;
 	private ServerConfig serverConfig;
 	private Configuration user_config;
 	private Client client;
-	private HashMap<String, String> pages;
 	private Log log;
 	private long lastRequestTime;
 	private int keepmealive_duration; // time in ms
 	
 	public Server(String url_, Configuration user_config_, Client client_) {
 		super();
-		this.base_url = url_;
 		this.user_config = user_config_;
 		this.client = client_;
-		this.pages = new HashMap<String, String>();
 		this.log = Log.getInstance(this.user_config);
 		this.lastRequestTime = 0;
 		this.keepmealive_duration = 15 * 60 * 1000; // default 15min
@@ -124,7 +119,7 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 		builder.cookieJar(new JavaNetCookieJar(cookieManager));
 		
 		Retrofit retrofit = new Retrofit.Builder()
-				.baseUrl(this.base_url)
+				.baseUrl(url_)
 				.client(builder.build())
 				.addConverterFactory(SimpleXmlConverterFactory.createNonStrict(new Persister(new AnnotationStrategy())))
 				.build();
@@ -192,10 +187,6 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 				this.log.debug("Server::stayAlive Exception " + e + " stacktrace: " + sw.toString());
 			}
 		}
-	}
-	
-	public String toString() {
-		return String.format("Server (base_url '%s', user_config %s, pages %s", this.base_url, this.user_config, this.pages);
 	}
 	
 	public Error.Type getConfiguration() {
@@ -858,30 +849,26 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 	
 	public byte[] getLastRender() {
 		try {
-			HttpURLConnection httpCon = this.HTTPRequest(this.getPage("last-render-frame"));
-			
-			InputStream inStrm = httpCon.getInputStream();
-			if (httpCon.getResponseCode() != HttpURLConnection.HTTP_OK) {
-				this.log.debug("Server::getLastRender code not ok " + httpCon.getResponseCode());
-				return null;
+			Response<ResponseBody> response = service.getLastRenderThumbnail(serverConfig.getRequestEndPoint("last-render-frame").getPath()).execute();
+			if (response.isSuccessful()) {
+				InputStream inStrm = response.body().byteStream();
+				int size = (int)response.body().contentLength();
+				if (size <= 0) {
+					this.log.debug("Server::getLastRender size is negative (size: " + size + ")");
+					return null;
+				}
+
+				byte[] ret = new byte[size];
+				byte[] ch = new byte[512 * 1024];
+				int n = 0;
+				int i = 0;
+				while ((n = inStrm.read(ch)) != -1) {
+					System.arraycopy(ch, 0, ret, i, n);
+					i += n;
+				}
+				inStrm.close();
+				return ret;
 			}
-			int size = httpCon.getContentLength();
-			
-			if (size <= 0) {
-				this.log.debug("Server::getLastRender size is negative (size: " + size + ")");
-				return null;
-			}
-			
-			byte[] ret = new byte[size];
-			byte[] ch = new byte[512 * 1024];
-			int n = 0;
-			int i = 0;
-			while ((n = inStrm.read(ch)) != -1) {
-				System.arraycopy(ch, 0, ret, i, n);
-				i += n;
-			}
-			inStrm.close();
-			return ret;
 		}
 		catch (Exception e) {
 			StringWriter sw = new StringWriter();
@@ -955,13 +942,6 @@ public class Server extends Thread implements HostnameVerifier, X509TrustManager
 				}
 			}
 		}
-	}
-	
-	public String getPage(String key) {
-		if (this.pages.containsKey(key)) {
-			return this.base_url + this.pages.get(key);
-		}
-		return "";
 	}
 	
 	@Override

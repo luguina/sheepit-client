@@ -3,6 +3,7 @@ package com.sheepit.client.server;
 import com.sheepit.client.server.datamodel.HeartBeatInfos;
 import com.sheepit.client.server.datamodel.JobInfos;
 import com.sheepit.client.server.datamodel.ServerConfig;
+import okhttp3.ResponseBody;
 import retrofit2.Call;
 import retrofit2.http.Field;
 import retrofit2.http.FormUrlEncoded;
@@ -45,6 +46,11 @@ public interface API {
 			@Field("extras") String extras,
 			@Field("rendertime") int rendertime,
 			@Field("remainingtime") int remainingtime);
+
+	@POST("{path}")
+	@FormUrlEncoded Call<ResponseBody> getLastRenderThumbnail(
+			@Path(value="path", encoded = true) String path);
+
 }
 
 //http://simple.sourceforge.net/download/stream/doc/tutorial/tutorial.php
