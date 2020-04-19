@@ -39,6 +39,7 @@ import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.UIManager;
 import javax.swing.Spring;
@@ -71,13 +72,14 @@ public class Working implements Activity {
 	private JLabel waiting_projects_value;
 	private JLabel connected_machines_value;
 	private JLabel user_info_total_rendertime_this_session_value;
+	private JLabel userInfoQueuedUploadsAndSizeValue;
 	private String currentTheme;
 	
 	public Working(GuiSwing parent_) {
 		parent = parent_;
 		
 		statusContent = new JLabel("Init");
-		renderedFrameContent = new JLabel("");
+		renderedFrameContent = new JLabel("0");
 		remainingFrameContent = new JLabel("");
 		creditEarned = new JLabel("");
 		current_project_name_value = new JLabel("");
@@ -91,6 +93,7 @@ public class Working implements Activity {
 		user_info_total_rendertime_this_session_value = new JLabel("");
 		lastRenderTime = new JLabel("");
 		lastRender = new JLabel("");
+		userInfoQueuedUploadsAndSizeValue = new JLabel("0");
 		currentTheme = UIManager.getLookAndFeel().getName();    // Capture the theme on component instantiation
 	}
 	
@@ -118,6 +121,7 @@ public class Working implements Activity {
 			user_info_total_rendertime_this_session_value = new JLabel(user_info_total_rendertime_this_session_value.getText());
 			lastRenderTime = new JLabel(lastRenderTime.getText());
 			lastRender = new JLabel(lastRender.getText());
+			userInfoQueuedUploadsAndSizeValue = new JLabel(userInfoQueuedUploadsAndSizeValue.getText());
 
 			// set the new theme as the current one
 			currentTheme = UIManager.getLookAndFeel().getName();
@@ -154,6 +158,7 @@ public class Working implements Activity {
 		
 		JLabel user_info_credits_this_session = new JLabel("Points earned: ", JLabel.TRAILING);
 		JLabel user_info_total_rendertime_this_session = new JLabel("Duration: ", JLabel.TRAILING);
+		JLabel user_info_pending_uploads_and_size = new JLabel("Queued uploads: ", JLabel.TRAILING);
 		JLabel user_info_rendered_frame_this_session = new JLabel("Rendered frames: ", JLabel.TRAILING);
 		JLabel global_static_renderable_project = new JLabel("Renderable projects: ", JLabel.TRAILING);
 		
@@ -162,6 +167,9 @@ public class Working implements Activity {
 		
 		session_info_panel.add(user_info_rendered_frame_this_session);
 		session_info_panel.add(renderedFrameContent);
+		
+		session_info_panel.add(user_info_pending_uploads_and_size);
+		session_info_panel.add(userInfoQueuedUploadsAndSizeValue);
 		
 		session_info_panel.add(global_static_renderable_project);
 		session_info_panel.add(renderable_projects_value);
@@ -193,7 +201,7 @@ public class Working implements Activity {
 		// last frame
 		JPanel last_frame_panel = new JPanel();
 		last_frame_panel.setLayout(new BoxLayout(last_frame_panel, BoxLayout.Y_AXIS));
-		last_frame_panel.setBorder(BorderFactory.createTitledBorder("Last rendered frame"));
+		last_frame_panel.setBorder(BorderFactory.createTitledBorder("Last uploaded frame"));
 		lastRender.setIcon(new ImageIcon(new BufferedImage(200, 120, BufferedImage.TYPE_INT_ARGB)));
 		lastRender.setAlignmentX(Component.CENTER_ALIGNMENT);
 		lastRenderTime.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -221,7 +229,7 @@ public class Working implements Activity {
 		JButton blockJob = new JButton("Block this project");
 		blockJob.addActionListener(new blockJobAction());
 		
-		exitAfterFrame = new JButton("Exit after this frame");
+		exitAfterFrame = new JButton("Exit");
 		exitAfterFrame.addActionListener(new ExitAfterAction());
 		
 		buttonsPanel.add(settingsButton);
@@ -245,10 +253,10 @@ public class Working implements Activity {
 		
 		Spring widthLeftColumn = getBestWidth(current_project_panel, 4, 2);
 		widthLeftColumn = Spring.max(widthLeftColumn, getBestWidth(global_stats_panel, 4, 2));
-		widthLeftColumn = Spring.max(widthLeftColumn, getBestWidth(session_info_panel, 3, 2));
+		widthLeftColumn = Spring.max(widthLeftColumn, getBestWidth(session_info_panel, 4, 2));
 		alignPanel(current_project_panel, 5, 2, widthLeftColumn);
 		alignPanel(global_stats_panel, 4, 2, widthLeftColumn);
-		alignPanel(session_info_panel, 4, 2, widthLeftColumn);
+		alignPanel(session_info_panel, 5, 2, widthLeftColumn);
 	}
 	
 	public void setStatus(String msg_) {
@@ -279,7 +287,32 @@ public class Working implements Activity {
 		renderable_projects_value.setText(df.format(stats.getRenderableProject()));
 		waiting_projects_value.setText(df.format(stats.getWaitingProject()));
 		connected_machines_value.setText(df.format(stats.getConnectedMachine()));
+		
 		updateTime();
+	}
+	
+	public void displayUploadQueueStats(int queueSize, long queueVolume) {
+		userInfoQueuedUploadsAndSizeValue.setText(String.format("%d%s%s",
+				queueSize,
+				(queueSize > 0 ? String.format(" (%.2fMB) ", (queueVolume / 1024.0 / 1024.0)) : ""),
+				(queueSize == this.parent.getConfiguration().getMaxUploadingJob() ? "- Queue full!" : "")
+		));
+		
+		// If the user has requested to exit, then we need to update the JButton with the queue size
+		if (this.exitAfterFrame.getText().startsWith("Cancel")) {
+			Client client = parent.getClient();
+			
+			if (client != null) {
+				if (client.isRunning()) {
+					queueSize++;
+				}
+			}
+			
+			exitAfterFrame.setText(String.format("Cancel exit (%s frame%s to go)",
+					queueSize,
+					(queueSize > 1 ? "s" : ""))
+			);
+		}
 	}
 	
 	public void updateTime() {
@@ -438,11 +471,39 @@ public class Working implements Activity {
 			Client client = parent.getClient();
 			if (client != null) {
 				if (client.isRunning()) {
-					exitAfterFrame.setText("Cancel exit");
-					client.askForStop();
+					String[] exitJobOptions = {"Finish Current Jobs and then Exit", "Cancel Everything and Exit Now", "Do Nothing"};
+					int jobsQueueSize = client.getUploadQueueSize() + (client.isRunning() ? 1 : 0);
+
+					int userDecision = JOptionPane.showOptionDialog(
+							null,
+							String.format("<html>Please be aware that you have <strong>%d frame%s</strong> in either the upload queue or being rendered. Do you want to exit once the %sframe%s have been sent or right now?.\n\n",
+									jobsQueueSize ,   // Add the current frame to the total count ONLY if the client is running
+									(jobsQueueSize > 1 ? "s" : ""),
+									(jobsQueueSize > 1 ? (jobsQueueSize + " ") : ""),
+									(jobsQueueSize > 1 ? "s" : "")
+							),
+							"Exit Now or Later",
+							JOptionPane.DEFAULT_OPTION,
+							JOptionPane.QUESTION_MESSAGE,
+							null,
+							exitJobOptions,
+							exitJobOptions[2]);    // Make the "Do nothing" button the default one to avoid mistakes
+					
+					if (userDecision == 0) {
+						exitAfterFrame.setText(String.format("Cancel exit (%s frame%s to go)",
+								jobsQueueSize,
+								(jobsQueueSize > 1 ? "s" : "")
+								)
+						);
+						
+						client.askForStop();
+					} else if (userDecision == 1) {
+						client.stop();
+						System.exit(0);
+					}
 				}
 				else {
-					exitAfterFrame.setText("Exit after this frame");
+					exitAfterFrame.setText("Exit");
 					client.cancelStop();
 				}
 			}
