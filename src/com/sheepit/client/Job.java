@@ -56,8 +56,6 @@ public class Job {
 	public static final String UPDATE_METHOD_BY_REMAINING_TIME = "remainingtime";
 	public static final String UPDATE_METHOD_BLENDER_INTERNAL_BY_PART = "blenderinternal";
 	public static final String UPDATE_METHOD_BY_TILE = "by_tile";
-	public static final int    FRAME_BLOCK = 0;
-	public static final int    PERMANENT_PROJECT_BLOCK = 1;
 
 	public static final int SHOW_BASE_ICON = -1;
 
@@ -111,25 +109,12 @@ public class Job {
 		render = new RenderProcess();
 	}
 	
-	public void block(int blockType) {
+	public void block() {
 		setAskForRendererKill(true);
 		setUserBlockJob(true);
 		RenderProcess process = getProcessRender();
 		if (process != null) {
 			OS.getOS().kill(process.getProcess());
-		}
-		
-		if (blockType == this.PERMANENT_PROJECT_BLOCK) {
-			String blockSemaphore = configuration.getWorkingDirectory().getAbsolutePath() + File.separator + this.getSceneMD5() + ".blocked";
-			
-			try {
-				new File(blockSemaphore).createNewFile();
-				
-			} catch (IOException e) {
-				this.log.error(String.format("Unable to create blocking semaphore %s. File creation failed", blockSemaphore));
-				
-				e.printStackTrace();
-			}
 		}
 	}
 	
